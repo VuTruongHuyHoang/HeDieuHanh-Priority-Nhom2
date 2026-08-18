@@ -1,7 +1,6 @@
 # Priority Scheduling Demo V2
 
-Ứng dụng Python/Tkinter mô phỏng FCFS, SJF, SRTF, Priority Scheduling và
-Round Robin. Main UI hỗ trợ xem từng bước, Ready Queue, Gantt Chart, bảng chỉ
+Ứng dụng Python/Tkinter mô phỏng Priority Scheduling. Main UI hỗ trợ xem từng bước, Ready Queue, Gantt Chart, bảng chỉ
 số và so sánh năm thuật toán trên cùng một bộ dữ liệu.
 
 ## Chạy ứng dụng
