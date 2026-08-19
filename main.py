@@ -1,3 +1,5 @@
-import dummy_data
-print("=== PHẦN MỀM MÔ PHỎNG LẬP LỊCH CPU PRIORITY ===")
-print(dummy_data.danh_sach_test)
+from module8_mainui import main
+
+
+if __name__ == "__main__":
+    main()
