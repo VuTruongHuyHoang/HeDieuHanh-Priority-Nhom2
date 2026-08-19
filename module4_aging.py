@@ -3,6 +3,29 @@ from typing import List, Optional
 import copy
 
 
+def tinh_priority_hieu_dung(
+    process,
+    current_time,
+    executed=0,
+    aging_interval=None,
+):
+    """Tính Priority sau Aging mà không thay đổi tiến trình gốc."""
+    if isinstance(process, dict):
+        priority = process["PR"]
+        arrival_time = process["AT"]
+    else:
+        priority = getattr(process, "original_priority", process.priority)
+        arrival_time = process.arrival_time
+
+    if aging_interval is None:
+        return priority
+    if aging_interval <= 0:
+        raise ValueError("Aging interval phải lớn hơn 0.")
+
+    waiting_time = max(0, current_time - arrival_time - executed)
+    return max(0, priority - waiting_time // aging_interval)
+
+
 @dataclass
 class Process:
     pid: str
@@ -31,6 +54,9 @@ class AgingPriorityScheduler:
         self.min_priority = min_priority
         self.enable_aging = enable_aging
 
+        if self.enable_aging and self.aging_interval <= 0:
+            raise ValueError("Aging interval phải lớn hơn 0.")
+
         self.gantt_chart = []
         self.aging_log = []
 
@@ -39,9 +65,13 @@ class AgingPriorityScheduler:
             return
 
         for p in ready_queue:
-            waited = current_time - p.arrival_time
-            steps = waited // self.aging_interval
-            new_priority = max(self.min_priority, p.original_priority - steps * self.aging_factor)
+            effective_priority = tinh_priority_hieu_dung(
+                p,
+                current_time,
+                aging_interval=self.aging_interval,
+            )
+            improvement = (p.original_priority - effective_priority) * self.aging_factor
+            new_priority = max(self.min_priority, p.original_priority - improvement)
 
             if new_priority != p.priority:
                 self.aging_log.append({
