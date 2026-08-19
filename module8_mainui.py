@@ -1,6 +1,15 @@
 import tkinter as tk
+from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+from analyze import (
+    GRAPH_COLORS,
+    GRAPH_METRICS,
+    SUMMARY_GRAPH_METRICS,
+    analyze_path,
+    build_graph_series,
+    build_summary_rows,
+)
 from dummy_data import danh_sach_test
 from module1_nhaplieu import ProcessInputManager, chuan_hoa_danh_sach
 from module2_nonpreemptive import mo_phong_priority_nonpreemptive
@@ -17,6 +26,10 @@ SPEED_DELAYS = {
     "5x": 160,
 }
 
+BATCH_GRAPH_VIEWS = {
+    "Summary (All Metrics)": None,
+    **{title: metric for metric, title in GRAPH_METRICS.items()},
+}
 
 def _running_at(gantt, time_point):
     for segment in gantt:
@@ -96,11 +109,14 @@ class SchedulingDemoV2(tk.Tk):
 
         self.detail_tab = ttk.Frame(notebook)
         self.comparison_tab = ttk.Frame(notebook)
+        self.batch_tab = ttk.Frame(notebook)
         notebook.add(self.detail_tab, text="Detail Simulation")
         notebook.add(self.comparison_tab, text="Comparison: FCFS vs Priority")
+        notebook.add(self.batch_tab, text="Batch Analysis")
 
         self._build_detail_tab()
         self._build_comparison_tab()
+        self._build_batch_tab()
 
     def _build_detail_tab(self):
         controls = ttk.Frame(self.detail_tab, padding=8)
@@ -314,6 +330,175 @@ class SchedulingDemoV2(tk.Tk):
         self.compare_analysis.pack(fill="x", padx=8, pady=(0, 8))
         self._update_comparison_controls()
 
+    def _build_batch_tab(self):
+        controls = ttk.LabelFrame(
+            self.batch_tab,
+            text="Analyze multiple CSV files",
+            padding=10,
+        )
+        controls.pack(fill="x", padx=8, pady=8)
+        controls.columnconfigure(1, weight=1)
+
+        self.batch_input_path = tk.StringVar()
+        self.batch_output_path = tk.StringVar()
+        self.batch_priority_mode = tk.StringVar(value="Both")
+        self.batch_aging = tk.BooleanVar(value=False)
+        self.batch_interval = tk.StringVar(value="2")
+        self.batch_graph_view = tk.StringVar(value="Summary (All Metrics)")
+        self.batch_graph_hint = tk.StringVar(
+            value="Average metrics aggregated across all successful CSV files"
+        )
+        self.batch_graph_rows = []
+        self.batch_status = tk.StringVar(
+            value="Select a folder containing CSV files to begin."
+        )
+
+        ttk.Label(controls, text="CSV folder").grid(
+            row=0, column=0, sticky="w", padx=(0, 8), pady=4
+        )
+        ttk.Entry(controls, textvariable=self.batch_input_path).grid(
+            row=0, column=1, sticky="ew", pady=4
+        )
+        ttk.Button(
+            controls,
+            text="Browse",
+            command=self._browse_batch_input,
+        ).grid(row=0, column=2, padx=(8, 0), pady=4)
+
+        ttk.Label(controls, text="Output folder").grid(
+            row=1, column=0, sticky="w", padx=(0, 8), pady=4
+        )
+        ttk.Entry(controls, textvariable=self.batch_output_path).grid(
+            row=1, column=1, sticky="ew", pady=4
+        )
+        ttk.Button(
+            controls,
+            text="Browse",
+            command=self._browse_batch_output,
+        ).grid(row=1, column=2, padx=(8, 0), pady=4)
+
+        options = ttk.Frame(controls)
+        options.grid(row=2, column=0, columnspan=3, sticky="w", pady=(8, 2))
+        ttk.Label(options, text="Priority mode").grid(row=0, column=0, padx=(0, 5))
+        ttk.Combobox(
+            options,
+            textvariable=self.batch_priority_mode,
+            values=("Both", "Non-Preemptive", "Preemptive"),
+            state="readonly",
+            width=17,
+        ).grid(row=0, column=1, padx=(0, 12))
+        ttk.Checkbutton(
+            options,
+            text="Aging",
+            variable=self.batch_aging,
+            command=self._update_batch_controls,
+        ).grid(row=0, column=2, padx=4)
+        ttk.Label(options, text="Interval").grid(row=0, column=3, padx=(8, 4))
+        self.batch_interval_entry = ttk.Entry(
+            options,
+            textvariable=self.batch_interval,
+            width=8,
+        )
+        self.batch_interval_entry.grid(row=0, column=4, padx=(0, 12))
+        ttk.Button(
+            options,
+            text="Analyze and save",
+            command=self._run_batch_analysis,
+        ).grid(row=0, column=5, padx=4)
+
+        result_box = ttk.LabelFrame(
+            self.batch_tab,
+            text="FCFS and Priority statistics",
+            padding=8,
+        )
+        result_box.pack(fill="x", padx=8, pady=(0, 8))
+        result_box.columnconfigure(0, weight=1)
+        result_box.rowconfigure(0, weight=1)
+
+        columns = (
+            "Dataset",
+            "Algorithm",
+            "Avg WT",
+            "Avg TAT",
+            "Avg RT",
+            "Context Switch",
+            "Total Time",
+            "Status",
+        )
+        self.batch_table = ttk.Treeview(
+            result_box,
+            columns=columns,
+            show="headings",
+            height=7,
+        )
+        for column in columns:
+            self.batch_table.heading(column, text=column)
+            width = 190 if column in {"Dataset", "Algorithm"} else 105
+            self.batch_table.column(column, width=width, anchor="center")
+        scrollbar = ttk.Scrollbar(
+            result_box,
+            orient="vertical",
+            command=self.batch_table.yview,
+        )
+        self.batch_table.configure(yscrollcommand=scrollbar.set)
+        self.batch_table.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns")
+
+        graph_box = ttk.LabelFrame(
+            self.batch_tab,
+            text="FCFS and Priority graph",
+            padding=8,
+        )
+        graph_box.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        graph_box.columnconfigure(0, weight=1)
+        graph_box.rowconfigure(1, weight=1)
+
+        graph_controls = ttk.Frame(graph_box)
+        graph_controls.grid(row=0, column=0, sticky="ew", pady=(0, 5))
+        ttk.Label(graph_controls, text="Graph view").pack(side="left", padx=(0, 5))
+        graph_view_box = ttk.Combobox(
+            graph_controls,
+            textvariable=self.batch_graph_view,
+            values=tuple(BATCH_GRAPH_VIEWS),
+            state="readonly",
+            width=28,
+        )
+        graph_view_box.pack(side="left", padx=(0, 12))
+        graph_view_box.bind("<<ComboboxSelected>>", self._draw_batch_graph)
+        ttk.Label(
+            graph_controls,
+            textvariable=self.batch_graph_hint,
+        ).pack(side="left")
+
+        canvas_frame = ttk.Frame(graph_box)
+        canvas_frame.grid(row=1, column=0, sticky="nsew")
+        canvas_frame.columnconfigure(0, weight=1)
+        canvas_frame.rowconfigure(0, weight=1)
+        self.batch_graph_canvas = tk.Canvas(
+            canvas_frame,
+            height=260,
+            background="white",
+            highlightthickness=1,
+            highlightbackground="#CCCCCC",
+        )
+        graph_scrollbar = ttk.Scrollbar(
+            canvas_frame,
+            orient="horizontal",
+            command=self.batch_graph_canvas.xview,
+        )
+        self.batch_graph_canvas.configure(xscrollcommand=graph_scrollbar.set)
+        self.batch_graph_canvas.grid(row=0, column=0, sticky="nsew")
+        graph_scrollbar.grid(row=1, column=0, sticky="ew")
+        self.batch_graph_canvas.bind("<Configure>", self._draw_batch_graph)
+
+        ttk.Label(
+            self.batch_tab,
+            textvariable=self.batch_status,
+            anchor="w",
+            wraplength=1150,
+        ).pack(fill="x", padx=10, pady=(0, 10))
+        self._update_batch_controls()
+
     def _refresh_input_table(self):
         for item in self.input_table.get_children():
             self.input_table.delete(item)
@@ -407,6 +592,347 @@ class SchedulingDemoV2(tk.Tk):
         self.compare_interval_entry.configure(
             state="normal" if self.compare_aging.get() else "disabled"
         )
+
+    def _browse_batch_input(self):
+        directory = filedialog.askdirectory(title="Select folder containing CSV files")
+        if not directory:
+            return
+        self.batch_input_path.set(directory)
+        if not self.batch_output_path.get().strip():
+            self.batch_output_path.set(str(Path(directory) / "analysis_output"))
+
+    def _browse_batch_output(self):
+        directory = filedialog.askdirectory(title="Select output folder")
+        if directory:
+            self.batch_output_path.set(directory)
+
+    def _update_batch_controls(self):
+        self.batch_interval_entry.configure(
+            state="normal" if self.batch_aging.get() else "disabled"
+        )
+
+    def _draw_batch_graph(self, _event=None):
+        canvas = self.batch_graph_canvas
+        canvas.delete("all")
+        if not self.batch_graph_rows:
+            canvas.create_text(
+                20,
+                20,
+                anchor="nw",
+                text="Run Batch Analysis to display the graph.",
+                fill="#666666",
+            )
+            canvas.configure(scrollregion=(0, 0, canvas.winfo_width(), 260))
+            return
+
+        graph_view = self.batch_graph_view.get()
+        metric = BATCH_GRAPH_VIEWS.get(graph_view)
+        if metric is not None:
+            self.batch_graph_hint.set(
+                "Metric values of each CSV file, grouped by scheduling algorithm"
+            )
+            self._draw_batch_metric_graph(metric)
+            return
+
+        self.batch_graph_hint.set(
+            "Average metrics aggregated across all successful CSV files"
+        )
+
+        summary_rows = build_summary_rows(self.batch_graph_rows)
+        if not summary_rows:
+            canvas.create_text(
+                20,
+                20,
+                anchor="nw",
+                text="No successful data is available for this graph.",
+                fill="#666666",
+            )
+            return
+
+        group_width = 240
+        content_width = max(
+            canvas.winfo_width(),
+            100 + len(summary_rows) * group_width,
+        )
+        height = max(canvas.winfo_height(), 260)
+        left = 55
+        top = 48
+        bottom = height - 85
+        plot_height = max(80, bottom - top)
+        values = [
+            float(row[metric])
+            for row in summary_rows
+            for metric, _label in SUMMARY_GRAPH_METRICS
+        ]
+        maximum = max(values, default=0.0)
+        y_max = maximum * 1.15 if maximum > 0 else 1.0
+
+        legend_x = left
+        for index, (_metric, label) in enumerate(SUMMARY_GRAPH_METRICS):
+            color = GRAPH_COLORS[index % len(GRAPH_COLORS)]
+            canvas.create_rectangle(
+                legend_x,
+                12,
+                legend_x + 12,
+                24,
+                fill=color,
+                outline="",
+            )
+            canvas.create_text(
+                legend_x + 17,
+                18,
+                anchor="w",
+                text=label,
+                font=("Arial", 9),
+            )
+            legend_x += max(125, len(label) * 7 + 30)
+
+        for tick in range(6):
+            value = y_max * tick / 5
+            y = bottom - plot_height * tick / 5
+            canvas.create_line(left, y, content_width - 20, y, fill="#DDDDDD")
+            canvas.create_text(
+                left - 7,
+                y,
+                anchor="e",
+                text=f"{value:.1f}",
+                font=("Arial", 8),
+            )
+        canvas.create_line(left, top, left, bottom, fill="#333333", width=2)
+        canvas.create_line(
+            left,
+            bottom,
+            content_width - 20,
+            bottom,
+            fill="#333333",
+            width=2,
+        )
+
+        bar_width = 30
+        for algorithm_index, row in enumerate(summary_rows):
+            center = left + 75 + algorithm_index * group_width
+            first_x = center - len(SUMMARY_GRAPH_METRICS) * bar_width / 2
+            for metric_index, (metric, _label) in enumerate(SUMMARY_GRAPH_METRICS):
+                value = float(row[metric])
+                color = GRAPH_COLORS[metric_index % len(GRAPH_COLORS)]
+                bar_height = value / y_max * plot_height
+                x1 = first_x + metric_index * bar_width
+                y1 = bottom - bar_height
+                canvas.create_rectangle(
+                    x1,
+                    y1,
+                    x1 + bar_width - 3,
+                    bottom,
+                    fill=color,
+                    outline="",
+                )
+                canvas.create_text(
+                    x1 + (bar_width - 3) / 2,
+                    y1 - 7,
+                    text=f"{value:.2f}",
+                    font=("Arial", 8),
+                )
+            canvas.create_text(
+                center,
+                bottom + 10,
+                anchor="ne",
+                angle=15,
+                text=row["algorithm"],
+                font=("Arial", 8),
+            )
+            canvas.create_text(
+                center,
+                bottom + 68,
+                text=f"{row['dataset_count']} datasets",
+                font=("Arial", 8),
+                fill="#666666",
+            )
+
+        canvas.configure(scrollregion=(0, 0, content_width, height))
+
+    def _draw_batch_metric_graph(self, metric):
+        canvas = self.batch_graph_canvas
+        series = build_graph_series(self.batch_graph_rows, metric)
+        datasets = series["datasets"]
+        algorithms = series["algorithms"]
+        if not datasets or not algorithms:
+            canvas.create_text(
+                20,
+                20,
+                anchor="nw",
+                text="No successful data is available for this graph.",
+                fill="#666666",
+            )
+            canvas.configure(scrollregion=(0, 0, canvas.winfo_width(), 260))
+            return
+
+        group_width = max(105, len(algorithms) * 30 + 30)
+        content_width = max(
+            canvas.winfo_width(),
+            100 + len(datasets) * group_width,
+        )
+        height = max(canvas.winfo_height(), 260)
+        left = 55
+        top = 48
+        bottom = height - 72
+        plot_height = max(80, bottom - top)
+        values = [
+            value
+            for dataset_values in series["values"].values()
+            for value in dataset_values.values()
+        ]
+        maximum = max(values, default=0.0)
+        y_max = maximum * 1.15 if maximum > 0 else 1.0
+
+        legend_x = left
+        for index, algorithm in enumerate(algorithms):
+            color = GRAPH_COLORS[index % len(GRAPH_COLORS)]
+            canvas.create_rectangle(
+                legend_x,
+                12,
+                legend_x + 12,
+                24,
+                fill=color,
+                outline="",
+            )
+            canvas.create_text(
+                legend_x + 17,
+                18,
+                anchor="w",
+                text=algorithm,
+                font=("Arial", 9),
+            )
+            legend_x += max(155, len(algorithm) * 7 + 32)
+
+        for tick in range(6):
+            value = y_max * tick / 5
+            y = bottom - plot_height * tick / 5
+            canvas.create_line(left, y, content_width - 20, y, fill="#DDDDDD")
+            canvas.create_text(
+                left - 7,
+                y,
+                anchor="e",
+                text=f"{value:.1f}",
+                font=("Arial", 8),
+            )
+        canvas.create_line(left, top, left, bottom, fill="#333333", width=2)
+        canvas.create_line(
+            left,
+            bottom,
+            content_width - 20,
+            bottom,
+            fill="#333333",
+            width=2,
+        )
+
+        bar_width = 24
+        for dataset_index, dataset in enumerate(datasets):
+            center = left + 55 + dataset_index * group_width
+            first_x = center - len(algorithms) * bar_width / 2
+            for algorithm_index, algorithm in enumerate(algorithms):
+                value = series["values"].get(dataset, {}).get(algorithm)
+                if value is None:
+                    continue
+                color = GRAPH_COLORS[algorithm_index % len(GRAPH_COLORS)]
+                bar_height = value / y_max * plot_height
+                x1 = first_x + algorithm_index * bar_width
+                y1 = bottom - bar_height
+                canvas.create_rectangle(
+                    x1,
+                    y1,
+                    x1 + bar_width - 3,
+                    bottom,
+                    fill=color,
+                    outline="",
+                )
+                canvas.create_text(
+                    x1 + (bar_width - 3) / 2,
+                    y1 - 7,
+                    text=f"{value:.2f}",
+                    font=("Arial", 8),
+                )
+            canvas.create_text(
+                center,
+                bottom + 10,
+                anchor="ne",
+                angle=30,
+                text=dataset,
+                font=("Arial", 8),
+            )
+
+        canvas.configure(scrollregion=(0, 0, content_width, height))
+
+    def _run_batch_analysis(self):
+        input_path = self.batch_input_path.get().strip()
+        output_path = self.batch_output_path.get().strip()
+        if not input_path or not output_path:
+            messagebox.showerror(
+                "Batch Analysis",
+                "Please select both the CSV folder and the output folder.",
+            )
+            return
+
+        mode_map = {
+            "Both": "both",
+            "Non-Preemptive": "non-preemptive",
+            "Preemptive": "preemptive",
+        }
+        try:
+            aging_interval = self._aging_interval(
+                self.batch_aging.get(),
+                self.batch_interval.get(),
+            )
+            report = analyze_path(
+                input_path,
+                output_path,
+                priority_mode=mode_map[self.batch_priority_mode.get()],
+                aging_interval=aging_interval,
+            )
+        except (KeyError, OSError, TypeError, ValueError) as error:
+            messagebox.showerror("Batch Analysis", str(error))
+            return
+
+        for item in self.batch_table.get_children():
+            self.batch_table.delete(item)
+        for row in report["statistics"]:
+            status = row["status"]
+            if status == "error":
+                status = f"Error: {row['error']}"
+            self.batch_table.insert(
+                "",
+                "end",
+                values=(
+                    row["dataset"],
+                    row["algorithm"],
+                    row["average_wt"],
+                    row["average_tat"],
+                    row["average_rt"],
+                    row["context_switches"],
+                    row["total_time"],
+                    status,
+                ),
+            )
+
+        self.batch_graph_rows = report["statistics"]
+        self.update_idletasks()
+        self._draw_batch_graph()
+
+        self.batch_status.set(
+            f"Processed {report['successful_files']}/{report['total_files']} files; "
+            f"failed: {report['failed_files']}. Saved statistics.csv, summary.csv "
+            f"and SVG graphs in {Path(output_path).resolve()}."
+        )
+        if report["failed_files"]:
+            messagebox.showwarning(
+                "Batch Analysis",
+                "Analysis completed, but some CSV files were invalid. "
+                "See the Status column and statistics.csv for details.",
+            )
+        else:
+            messagebox.showinfo(
+                "Batch Analysis",
+                "Analysis completed and all statistics were saved.",
+            )
 
     def _prepare_detail(self):
         try:
