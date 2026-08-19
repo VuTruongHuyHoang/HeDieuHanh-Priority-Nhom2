@@ -13,7 +13,7 @@ class ProcessInputManager:
             return False, "Error: PID cannot be empty."
 
         cleaned_pid = str(pid).strip()
-        if any(p["PID"] == cleaned_pid for p in self.process_list):
+        if any(p["PID"].casefold() == cleaned_pid.casefold() for p in self.process_list):
             return False, f"Error: PID '{cleaned_pid}' already exists."
 
         if at < 0:
@@ -28,21 +28,31 @@ class ProcessInputManager:
         return True, ""
 
     def add_process(self, pid: str, at: int, bt: int, pr: int) -> Tuple[bool, str]:
+        try:
+            at = int(at)
+            bt = int(bt)
+            pr = int(pr)
+        except (TypeError, ValueError):
+            return False, "Error: AT, BT and PR must be integers."
+
         is_valid, error_msg = self.validate(pid, at, bt, pr)
         if not is_valid:
             return False, error_msg
 
         self.process_list.append({
             "PID": str(pid).strip(),
-            "AT": int(at),
-            "BT": int(bt),
-            "PR": int(pr)
+            "AT": at,
+            "BT": bt,
+            "PR": pr
         })
         return True, "Process added successfully."
 
     def remove_process(self, pid: str) -> bool:
         initial_length = len(self.process_list)
-        self.process_list = [p for p in self.process_list if p["PID"] != str(pid).strip()]
+        cleaned_pid = str(pid).strip().casefold()
+        self.process_list = [
+            p for p in self.process_list if p["PID"].casefold() != cleaned_pid
+        ]
         return len(self.process_list) < initial_length
 
     def clear(self) -> None:
@@ -128,8 +138,40 @@ def get_initial_processes(
         except ImportError:
             
             return [
-                {"PID": "P1", "AT": 0, "BT": 5, "PR": 2},
-                {"PID": "P2", "AT": 1, "BT": 3, "PR": 1},
-                {"PID": "P3", "AT": 2, "BT": 8, "PR": 3},
-                {"PID": "P4", "AT": 4, "BT": 2, "PR": 4}
+                {"PID": "P1", "AT": 0, "BT": 5, "PR": 3},
+                {"PID": "P2", "AT": 1, "BT": 3, "PR": 4},
+                {"PID": "P3", "AT": 2, "BT": 4, "PR": 2},
+                {"PID": "P4", "AT": 4, "BT": 2, "PR": 1}
             ]
+
+
+def chuan_hoa_danh_sach(rows):
+    """Chuẩn hóa input của các module về schema PID/AT/BT/PR."""
+    rows = list(rows)
+    if not rows:
+        raise ValueError("Cần ít nhất một tiến trình để mô phỏng.")
+
+    manager = ProcessInputManager()
+
+    for row in rows:
+        if not isinstance(row, dict):
+            raise TypeError("Mỗi tiến trình phải là dictionary.")
+
+        normalized = {str(key).casefold(): value for key, value in row.items()}
+
+        def get_value(*names):
+            for name in names:
+                if name.casefold() in normalized:
+                    return normalized[name.casefold()]
+            raise ValueError(f"Thiếu trường {names[0]}.")
+
+        success, message = manager.add_process(
+            get_value("PID"),
+            get_value("AT", "arrival", "arrival_time"),
+            get_value("BT", "burst", "burst_time"),
+            get_value("PR", "priority"),
+        )
+        if not success:
+            raise ValueError(message)
+
+    return manager.get_data()
